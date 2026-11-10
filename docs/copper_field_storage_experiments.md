@@ -60,7 +60,7 @@ on thru, return-loss and P/N-coupling paths over CTx1 and CRx1, see [Q16 tiles](
 | `COPPER_GPU_TIMING=1` | per-100-step GPU timing, and mixed-tile statistics every 1000 steps |
 | `COPPER_PROFILE_KERNELS=1` | GPU time per kernel category, each in its own timestamped encoder |
 | `kiems --absorbing-boundary-cells N`, `grid.absorbing_boundary_cells`, the app's Absorbing Boundary field | absorbing boundary (CPML) depth in cells, default 8; changes the geometry |
-| `COPPER_END_CHECK_STEPS=N` | check the -60 dB end criterion every N steps instead of every 4 s of wall time |
+| `COPPER_END_CHECK_STEPS=N` | check the -60 dB end criterion every N steps (default: a sixteenth of the excitation) |
 | `COPPER_CPML_PSI` | CPML psi storage: `fp32` (default), `fp16`, `bf16`, `bf16sr` (stochastically rounded), `dropN`/`dropNsr` (fp32 with N mantissa bits rounded away); see [Reduced-precision psi](#reduced-precision-psi) |
 | `COPPER_CPML_PSI_SIDE` | `E`, `H` or `EH` (default): which sides' psi use `COPPER_CPML_PSI`; the other stays fp32 |
 | `COPPER_CPML_PSI_SCALE_LOG2=e,h` | `fp16` psi stores the E/H side times 2^e / 2^h |
@@ -481,10 +481,12 @@ its CRx1 numbers somewhat.
   fixture and through the board S-parameters, not on long-running stiff RLC combinations.
 - Ping-pong doubles field memory (2.83 GB vs 2.00 GB mixed). The CPU-side field accessors follow
   whichever set is live, including mid-step for a MidStepCorrection.
-- <a id="end-criterion"></a>**The end criterion is checked on wall-clock time** (every 4 s, at the
-  progress print), so on a board whose energy decay beats around -60 dB the stop step -- and the
-  S-parameters, at the ~-70 dB level -- depend on machine speed and load. `COPPER_END_CHECK_STEPS=N`
-  checks it every N steps instead (with its own peak, so the 4 s ticks can't influence it), which
-  makes runs reproducible: the fp32 GPU path is deterministic run to run. Worth making the default.
+- <a id="end-criterion"></a>**The end criterion used to be checked on wall-clock time** (every 4 s,
+  at the progress print), so on a board whose energy decay beats around -60 dB the stop step -- and
+  the S-parameters, at the ~-70 dB level -- depended on machine speed and load. Worse, on a fast GPU
+  the first tick came after the pulse had gone, so the reference "peak" was already 30-50 dB down
+  and runs never stopped early. It is now checked every sixteenth of the excitation by default
+  (`COPPER_END_CHECK_STEPS=N` overrides that), which makes runs reproducible: the fp32 GPU path is
+  deterministic run to run.
 - The run stops on energy decay only: a run that goes NaN (as `fp16` psi did) runs to max_steps.
 - Nothing here is committed.

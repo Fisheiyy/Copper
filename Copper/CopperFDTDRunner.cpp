@@ -437,28 +437,29 @@ CopperFDTDRunResult runFDTDPortImpl(ContinuousStructure& csx, const CopperFDTDPo
             }
         };
 
-        // Energy-decay end criteria, matching openEMS's own RunFDTD() loop (openems.cpp) exactly:
-        // `endCrit = 1e-6` is openEMS's own default (-60dB, `endCrit = pow(10, -dB/10)`; openEMS
-        // itself hardcodes this same default, see openems.cpp's own `endCrit = 1e-6` -- not
-        // currently exposed as a config option on either backend, so hardcoding it here matches
-        // reality rather than pretending it's configurable). `maxEnergy` tracks the highest energy
-        // ever observed (effectively the excitation pulse's own peak, once it's fully entered the
-        // domain); `energyChange = currentEnergy/maxEnergy` is compared against `endCriteria` at the
-        // same >4s cadence as the progress print below (openEMS's own RunFDTD() computes both in the
-        // same `t_diff>4` block) -- CalcFastEnergy()/estimateEnergy() is cheap enough (a couple of
-        // vDSP sum-of-squares calls) that computing it more often would just be wasted work, not
-        // more useful information.
+        // Energy-decay end criteria. `endCrit = 1e-6` (-60 dB) is openEMS's own default, hardcoded
+        // there too. A run stops once its energy is that far below the highest energy seen.
+        //
+        // openEMS samples the energy only at its 4 s progress ticks, which on a CPU land a few hundred
+        // steps in, while the pulse is still entering. A GPU runs thousands of steps a second, so its
+        // first tick came after the pulse had left: the "peak" was energy already 30-50 dB down, a
+        // run that had decayed 65 dB reported 18, and every run went on to max_steps. So the energy
+        // is sampled on a step cadence instead, a sixteenth of the excitation, which catches the
+        // pulse's peak to within a fraction of a dB and stops a run at the same step on any machine.
+        // estimateEnergy() costs about a timestep's worth of field reads (Metal: ~14 ms on a
+        // 100M-cell board), so at this cadence it is well under 1% of the run.
+        // COPPER_END_CHECK_STEPS=N overrides the cadence.
         constexpr double endCriteria = 1e-6;
-        // EXPERIMENT (COPPER_END_CHECK_STEPS=N): check the criterion every N steps instead, so where
-        // a run stops doesn't depend on how fast the machine happens to be going -- a board whose
-        // decay beats around -60 dB otherwise stops wherever a 4 s tick happens to land, which moves
-        // its S-parameters at the ~-70 dB level from run to run.
-        std::uint32_t endCheckSteps = 0;
+        const std::size_t excitationSteps =
+            std::max(excitation.voltageSignal.size(), excitation.currentSignal.size());
+        std::uint32_t energyCheckSteps = static_cast<std::uint32_t>(std::max<std::size_t>(16, excitationSteps / 16));
         if (const char* env = std::getenv("COPPER_END_CHECK_STEPS")) {
-            endCheckSteps = static_cast<std::uint32_t>(std::max(0, std::atoi(env)));
+            if (const int requested = std::atoi(env); requested > 0) {
+                energyCheckSteps = static_cast<std::uint32_t>(requested);
+            }
         }
-        double checkedMaxEnergy = 0.0; // its own peak, so the 4 s ticks can't influence it
         double maxEnergy = 0.0;
+        double currentEnergy = 0.0;
         double energyChange = 1.0; // matches RunFDTD()'s own `double change=1;` initial value
         bool endCriteriaReached = false;
         bool cancelled = false;
@@ -551,13 +552,14 @@ CopperFDTDRunResult runFDTDPortImpl(ContinuousStructure& csx, const CopperFDTDPo
                     }
                 }
 
-                if (endCheckSteps != 0 && globalTimestep % endCheckSteps == 0) {
-                    const double energy = engine.estimateEnergy();
-                    checkedMaxEnergy = std::max(checkedMaxEnergy, energy);
-                    if (checkedMaxEnergy > 0.0 && energy / checkedMaxEnergy <= endCriteria) {
+                if (globalTimestep % energyCheckSteps == 0) {
+                    currentEnergy = engine.estimateEnergy();
+                    maxEnergy = std::max(maxEnergy, currentEnergy);
+                    if (maxEnergy > 0.0) {
+                        energyChange = currentEnergy / maxEnergy;
+                    }
+                    if (energyChange <= endCriteria) {
                         endCriteriaReached = true;
-                        std::fprintf(stderr, "Copper: end check: %.2f dB down at step %u, stopping\n",
-                                     -10.0 * std::log10(energy / checkedMaxEnergy), globalTimestep);
                     }
                 }
 
@@ -567,13 +569,7 @@ CopperFDTDRunResult runFDTDPortImpl(ContinuousStructure& csx, const CopperFDTDPo
                     const double elapsed = std::chrono::duration<double>(now - runStart).count();
                     const double stepRate = sinceLastPrint / static_cast<double>(globalTimestep - lastPrintStep);
 
-                    const double currentEnergy = engine.estimateEnergy();
-                    if (currentEnergy > maxEnergy) {
-                        maxEnergy = currentEnergy;
-                    }
-                    if (maxEnergy > 0.0) {
-                        energyChange = currentEnergy / maxEnergy;
-                    }
+                    // The energy reading is the step-cadence one above, at most energyCheckSteps old.
                     const double energyChangeDB = std::fabs(10.0 * std::log10(energyChange));
                     const double targetDB = std::fabs(10.0 * std::log10(endCriteria));
 
@@ -611,10 +607,6 @@ CopperFDTDRunResult runFDTDPortImpl(ContinuousStructure& csx, const CopperFDTDPo
                     }
                     lastPrint = now;
                     lastPrintStep = globalTimestep;
-
-                    if (energyChange <= endCriteria && endCheckSteps == 0) {
-                        endCriteriaReached = true;
-                    }
                 }
                 // A persisted series is captured at exactly the caller's step interval. Without
                 // one, periodic capture piggybacks on the same >4s wall-clock check above (so it
