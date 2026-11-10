@@ -1,0 +1,40 @@
+// The excitation cells' contributions this step (CopperFDTD.metal's applyExcitationCell, quirks
+// included -- see CopperCPUEngine::applyExcitationE). `side` 0 adds voltage excitation to E,
+// 1 current excitation to H. One thread per excitation cell, unless `serial` is set: the host sets
+// it when two cells of one side share a field value, whose parallel `+=` would race, and then the
+// first thread applies every cell in order.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x = 64) in;
+layout(push_constant) uniform Push { Params p; uint side; uint serial; } pc;
+
+void applyCell(Params p, bool voltage, uint i, int numTS, int period, int signalLength) {
+    const ExcitationCell cell = voltage ? p.voltageCells.v[i] : p.currentCells.v[i];
+    int excPos = numTS - int(cell.delaySteps);
+    excPos *= int(excPos > 0);
+    excPos %= period;
+    excPos *= int(excPos < signalLength);
+    const float value = cell.amplitude * (voltage ? p.voltageSignal.v[excPos] : p.currentSignal.v[excPos]);
+    const uint g = gridIndex(p, cell.x, cell.y, cell.z);
+    if (voltage) p.e[cell.axis].v[g] += value;
+    else p.h[cell.axis].v[g] += value;
+}
+
+void main() {
+    Params p = pc.p;
+    const uint tid = gl_GlobalInvocationID.x;
+    const bool voltage = pc.side == 0u;
+    const uint count = voltage ? p.voltageCount : p.currentCount;
+    const int numTS = int(p.state.v[0]);
+    const int period = p.periodSteps > 0 ? p.periodSteps : numTS + 1;
+    const int signalLength = int(voltage ? p.voltageSignalLength : p.currentSignalLength);
+    if (pc.serial != 0u) {
+        if (tid != 0u) return;
+        for (uint i = 0u; i < count; ++i) applyCell(p, voltage, i, numTS, period, signalLength);
+        return;
+    }
+    if (tid >= count) return;
+    applyCell(p, voltage, tid, numTS, period, signalLength);
+}

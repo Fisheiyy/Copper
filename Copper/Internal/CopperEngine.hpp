@@ -40,7 +40,11 @@ public:
     /// implementation-strategy choice, not a behavioral one. `Metal` (the default, preserving every
     /// existing caller's behavior) needs a working Metal device; `CPU` needs none, at some throughput
     /// cost -- see CopperCPUEngine.cpp's own file comment for the tradeoffs.
-    enum class Backend { Metal, CPU };
+    ///
+    /// `GPU` is the same request under a platform-neutral name: Metal on macOS, the Vulkan engine
+    /// (CopperVulkanEngine.cpp) elsewhere when Copper is built with COPPER_VULKAN. Off macOS a GPU
+    /// request falls back to the CPU engine when no GPU engine is available.
+    enum class Backend { Metal, CPU, GPU = Metal };
 
     /// Initializes `grid`'s coefficients (and `cpml`'s and `excitation`'s, if any) into the chosen
     /// backend and zero-initializes every E/H field and auxiliary PML state buffer (matching FDTD's

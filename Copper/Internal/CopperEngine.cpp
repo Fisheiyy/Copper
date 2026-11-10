@@ -1,15 +1,30 @@
 #include "CopperEngine.hpp"
 
 #include "CopperEngineBackend.hpp"
+#include "CopperFDTDRunner.h"
+
+#include <cstdio>
+#include <exception>
 
 namespace copper {
 
 namespace {
+// Backend::GPU (alias Metal) is Metal on macOS and Vulkan elsewhere when Copper was built with it.
+// A Vulkan engine that can't start (no driver or device, too little GPU memory) falls back to the
+// CPU engine, as a GPU request on a build without any GPU engine always has.
 std::unique_ptr<EngineBackend> makeBackend(const CopperYeeGrid& grid, const CopperExcitation& excitation,
                                            const CopperCPML& cpml, CopperEngine::Backend backend,
                                            const CopperDomainMask& domainMask) {
 #if defined(__APPLE__) && !defined(COPPER_CPU_ONLY)
-    if (backend == CopperEngine::Backend::Metal) return makeMetalEngineBackend(grid, excitation, cpml, domainMask);
+    if (backend == CopperEngine::Backend::GPU) return makeMetalEngineBackend(grid, excitation, cpml, domainMask);
+#elif defined(COPPER_VULKAN)
+    if (backend == CopperEngine::Backend::GPU) {
+        try {
+            return makeVulkanEngineBackend(grid, excitation, cpml, domainMask);
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "Copper: Vulkan GPU engine unavailable, using the CPU engine: %s\n", error.what());
+        }
+    }
 #else
     (void)backend;
 #endif
@@ -60,6 +75,30 @@ void CopperEngine::setLumpedRLC(const std::vector<CopperLumpedRLCCell>& cells) {
 
 void CopperEngine::declareMidStepCorrectionCells(const std::vector<CopperLumpedRLCCell>& cells) {
     _backend->declareMidStepCorrectionCells(cells);
+}
+
+std::vector<CopperGPUDevice> listGPUDevices(std::string* error) {
+#if defined(__APPLE__) && !defined(COPPER_CPU_ONLY)
+    // The Metal engine always runs on MTLCreateSystemDefaultDevice().
+    (void)error;
+    CopperGPUDevice device;
+    device.name = "System default GPU";
+    device.kind = "other";
+    device.api = "Metal";
+    device.usable = true;
+    device.isDefault = true;
+    return {device};
+#elif defined(COPPER_VULKAN)
+    try {
+        return listVulkanDevices();
+    } catch (const std::exception& failure) {
+        if (error) *error = failure.what();
+        return {};
+    }
+#else
+    if (error) *error = "this build of Copper has no GPU engine";
+    return {};
+#endif
 }
 
 } // namespace copper

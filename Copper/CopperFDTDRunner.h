@@ -293,6 +293,32 @@ CopperFDTDRunResult runFDTDPortOnCPU(ContinuousStructure& csx, const CopperFDTDP
                                       const std::function<bool()>& isCancelled = {},
                                       const std::optional<FieldFrameSeriesRequest>& fieldFrameSeries = std::nullopt);
 
+/// One GPU runFDTDPortOnGPU() could run on, as listGPUDevices() reports it.
+struct CopperGPUDevice {
+    /// The device's index (Vulkan enumeration order), which COPPER_VULKAN_DEVICE accepts in place of
+    /// its name -- needed to tell two identical GPUs apart.
+    std::uint32_t index = 0;
+    std::string name;
+    /// "discrete", "integrated", "virtual", "cpu" or "other".
+    std::string kind;
+    /// The API and version the engine would use it through, e.g. "Vulkan 1.4" or "Metal".
+    std::string api;
+    /// Its largest device-local memory heap; 0 when unknown.
+    std::uint64_t memoryBytes = 0;
+    /// Whether the GPU engine can run on it; `problem` says why not otherwise.
+    bool usable = false;
+    std::string problem;
+    /// Whether it is the one the engine picks when COPPER_VULKAN_DEVICE is unset.
+    bool isDefault = false;
+};
+
+/// The GPUs present, for a caller offering a choice of device. A GPU run picks one by
+/// COPPER_VULKAN_DEVICE (its index, exact name or part of its name), otherwise the entry marked
+/// isDefault. Empty, with `error` set, when this build has no GPU engine or there is no working
+/// GPU driver -- a GPU run then uses Copper's CPU engine. On macOS it lists only the Metal default
+/// device, the one the Metal engine always uses.
+std::vector<CopperGPUDevice> listGPUDevices(std::string* error = nullptr);
+
 /// One-off diagnostic, NOT part of the normal run path: sets up exactly like runFDTDPortOnGPU() (same
 /// grid/coefficient/excitation extraction, same CopperEngine), then instead of running to completion,
 /// steps the engine one timestep at a time for `frameCount` steps, writing every raw field component

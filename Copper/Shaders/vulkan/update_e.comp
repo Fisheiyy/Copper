@@ -1,0 +1,51 @@
+// The voltage (E) half-step for one cell: CopperCPUEngine::updateEInterior, then its applyCPML(0)
+// correction, in the same order and with the same arithmetic. Dispatched over every cell.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x = 32, local_size_y = 4, local_size_z = 2) in;
+layout(push_constant) uniform Push { Params p; } pc;
+
+void main() {
+    Params p = pc.p;
+    const uint x = gl_GlobalInvocationID.x, y = gl_GlobalInvocationID.y, z = gl_GlobalInvocationID.z;
+    if (x >= p.nx || y >= p.ny || z >= p.nz) return;
+    const uint g = gridIndex(p, x, y, z);
+    // The neighbour below on each axis, clamped to the cell itself at the low boundary.
+    const uint dx = x != 0u ? 1u : 0u;
+    const uint dy = y != 0u ? p.nx : 0u;
+    const uint dz = z != 0u ? p.nx * p.ny : 0u;
+
+    const float hx = p.h[0].v[g], hy = p.h[1].v[g], hz = p.h[2].v[g];
+    // Each component's two curl differences: t0 added, t1 subtracted (CopperCPUEngine's t0/t1).
+    const float t0[3] = float[3](hz - p.h[2].v[g - dy], hx - p.h[0].v[g - dz], hy - p.h[1].v[g - dx]);
+    const float t1[3] = float[3](hy - p.h[1].v[g - dz], hz - p.h[2].v[g - dx], hx - p.h[0].v[g - dy]);
+
+    float e[3];
+    for (uint n = 0u; n < 3u; ++n) {
+        e[n] = p.vv[n].v[g] * p.e[n].v[g] + p.vi[n].v[g] * (t0[n] - t1[n]);
+    }
+
+    if (p.cpmlActive != 0u) {
+        const uint layer[3] = uint[3](p.layerOf[0].v[x], p.layerOf[1].v[y], p.layerOf[2].v[z]);
+        if (layer[0] != kNoLayer || layer[1] != kNoLayer || layer[2] != kNoLayer) {
+            float sum[3] = float[3](0.0, 0.0, 0.0);
+            for (uint w = 0u; w < 3u; ++w) {
+                if (layer[w] == kNoLayer) continue;
+                const float b = p.bE[w].v[layer[w]];
+                const float c = p.cE[w].v[layer[w]];
+                const uint i = psiIndex(p, w, layer[w], x, y, z);
+                const uint a = (w + 1u) % 3u, bb = (w + 2u) % 3u;
+                const float psiA = b * p.psi[w * 2u].v[i] + c * t1[a];
+                const float psiB = b * p.psi[w * 2u + 1u].v[i] + c * t0[bb];
+                p.psi[w * 2u].v[i] = psiA;
+                p.psi[w * 2u + 1u].v[i] = psiB;
+                sum[a] -= psiA;
+                sum[bb] += psiB;
+            }
+            for (uint n = 0u; n < 3u; ++n) e[n] += p.vi[n].v[g] * sum[n];
+        }
+    }
+    for (uint n = 0u; n < 3u; ++n) p.e[n].v[g] = e[n];
+}

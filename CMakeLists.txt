@@ -3,6 +3,12 @@ cmake_minimum_required(VERSION 3.25)
 project(Copper LANGUAGES C CXX)
 
 option(COPPER_ENABLE_METAL "Build Copper's Metal backend when available" ${APPLE})
+if(APPLE)
+    set(_copper_vulkan_default OFF)
+else()
+    set(_copper_vulkan_default ON)
+endif()
+option(COPPER_ENABLE_VULKAN "Build Copper's Vulkan compute backend (the GPU engine off macOS) when volk and glslangValidator are found" ${_copper_vulkan_default})
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
@@ -147,6 +153,48 @@ if(APPLE AND COPPER_ENABLE_METAL)
     set_source_files_properties("${COPPER_METALLIB}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 else()
     target_compile_definitions(Copper PRIVATE COPPER_CPU_ONLY=1)
+endif()
+
+# The Vulkan engine (Copper/Internal/CopperVulkanEngine.cpp): GLSL compute shaders compiled to
+# SPIR-V headers at build time, Vulkan itself loaded at run time through volk, so a machine
+# without a Vulkan driver still runs Copper (a GPU request then falls back to the CPU engine).
+if(COPPER_ENABLE_VULKAN)
+    find_package(volk CONFIG QUIET)
+    find_program(COPPER_GLSLANG_VALIDATOR glslangValidator
+        HINTS "${VCPKG_INSTALLED_DIR}/${VCPKG_HOST_TRIPLET}/tools/glslang"
+              "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
+    if(volk_FOUND AND COPPER_GLSLANG_VALIDATOR)
+        set(COPPER_VULKAN_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Copper/Shaders/vulkan")
+        set(COPPER_VULKAN_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/vulkan_shaders")
+        set(COPPER_VULKAN_SHADER_HEADERS)
+        foreach(shader update_e update_h excitation lumped_rlc advance gather energy)
+            set(header "${COPPER_VULKAN_GENERATED_DIR}/${shader}.h")
+            add_custom_command(OUTPUT "${header}"
+                COMMAND "${CMAKE_COMMAND}" -E make_directory "${COPPER_VULKAN_GENERATED_DIR}"
+                COMMAND "${COPPER_GLSLANG_VALIDATOR}" -V --target-env vulkan1.2 --quiet
+                        --vn "copper_vk_${shader}" -o "${header}" "${COPPER_VULKAN_SHADER_DIR}/${shader}.comp"
+                DEPENDS "${COPPER_VULKAN_SHADER_DIR}/${shader}.comp" "${COPPER_VULKAN_SHADER_DIR}/common.glsl"
+                COMMENT "Compiling Vulkan shader ${shader}.comp"
+                VERBATIM)
+            list(APPEND COPPER_VULKAN_SHADER_HEADERS "${header}")
+        endforeach()
+        target_sources(Copper PRIVATE ${COPPER_VULKAN_SHADER_HEADERS})
+        target_include_directories(Copper PRIVATE "${COPPER_VULKAN_GENERATED_DIR}")
+        target_link_libraries(Copper PRIVATE volk::volk volk::volk_headers)
+        target_compile_definitions(Copper PRIVATE COPPER_VULKAN=1)
+        message(STATUS "Copper: Vulkan GPU backend enabled (${COPPER_GLSLANG_VALIDATOR})")
+
+        # CPU-vs-Vulkan parity check on synthetic grids; built on request
+        # (`cmake --build ... --target copper_vulkan_parity`).
+        add_executable(copper_vulkan_parity EXCLUDE_FROM_ALL CopperTests/copper_vulkan_parity.cpp)
+        target_include_directories(copper_vulkan_parity PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/submodules/CSXCAD/src" ${HDF5_INCLUDE_DIRS})
+        target_link_libraries(copper_vulkan_parity PRIVATE Copper)
+        set_target_properties(copper_vulkan_parity PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED YES)
+    else()
+        message(WARNING "Copper: Vulkan GPU backend disabled -- needs volk (CMake config package) and "
+                        "glslangValidator; GPU requests will run on the CPU engine")
+    endif()
 endif()
 
 set_target_properties(Copper PROPERTIES OUTPUT_NAME Copper)

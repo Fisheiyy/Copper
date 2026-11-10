@@ -1,0 +1,17 @@
+// Copies the field cells a caller samples every step (probes) into host-visible memory at the end
+// of each step, so reading them back needs no extra GPU round trip. One thread per listed cell.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x = 64) in;
+layout(push_constant) uniform Push { Params p; } pc;
+
+void main() {
+    Params p = pc.p;
+    const uint tid = gl_GlobalInvocationID.x;
+    if (tid >= p.gatherCount) return;
+    const uint component = p.gatherList.v[2u * tid];
+    const uint g = p.gatherList.v[2u * tid + 1u];
+    p.gatherOut.v[tid] = component < 3u ? p.e[component].v[g] : p.h[component - 3u].v[g];
+}

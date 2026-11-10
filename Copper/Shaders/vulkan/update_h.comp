@@ -1,0 +1,48 @@
+// The current (H) half-step for one cell: CopperCPUEngine::updateHInterior, then its applyCPML(1)
+// correction. Dispatched over (nx-1, ny-1, nz-1): H has one cell fewer per axis than E, so every
+// +1 neighbour read is in bounds.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x = 32, local_size_y = 4, local_size_z = 2) in;
+layout(push_constant) uniform Push { Params p; } pc;
+
+void main() {
+    Params p = pc.p;
+    const uint x = gl_GlobalInvocationID.x, y = gl_GlobalInvocationID.y, z = gl_GlobalInvocationID.z;
+    if (x + 1u >= p.nx || y + 1u >= p.ny || z + 1u >= p.nz) return;
+    const uint g = gridIndex(p, x, y, z);
+    const uint dx = 1u, dy = p.nx, dz = p.nx * p.ny;
+
+    const float ex = p.e[0].v[g], ey = p.e[1].v[g], ez = p.e[2].v[g];
+    const float t0[3] = float[3](ez - p.e[2].v[g + dy], ex - p.e[0].v[g + dz], ey - p.e[1].v[g + dx]);
+    const float t1[3] = float[3](ey - p.e[1].v[g + dz], ez - p.e[2].v[g + dx], ex - p.e[0].v[g + dy]);
+
+    float h[3];
+    for (uint n = 0u; n < 3u; ++n) {
+        h[n] = p.ii[n].v[g] * p.h[n].v[g] + p.iv[n].v[g] * (t0[n] - t1[n]);
+    }
+
+    if (p.cpmlActive != 0u) {
+        const uint layer[3] = uint[3](p.layerOf[0].v[x], p.layerOf[1].v[y], p.layerOf[2].v[z]);
+        if (layer[0] != kNoLayer || layer[1] != kNoLayer || layer[2] != kNoLayer) {
+            float sum[3] = float[3](0.0, 0.0, 0.0);
+            for (uint w = 0u; w < 3u; ++w) {
+                if (layer[w] == kNoLayer) continue;
+                const float b = p.bH[w].v[layer[w]];
+                const float c = p.cH[w].v[layer[w]];
+                const uint i = psiIndex(p, w, layer[w], x, y, z);
+                const uint a = (w + 1u) % 3u, bb = (w + 2u) % 3u;
+                const float psiA = b * p.psi[6u + w * 2u].v[i] + c * t1[a];
+                const float psiB = b * p.psi[6u + w * 2u + 1u].v[i] + c * t0[bb];
+                p.psi[6u + w * 2u].v[i] = psiA;
+                p.psi[6u + w * 2u + 1u].v[i] = psiB;
+                sum[a] -= psiA;
+                sum[bb] += psiB;
+            }
+            for (uint n = 0u; n < 3u; ++n) h[n] += p.iv[n].v[g] * sum[n];
+        }
+    }
+    for (uint n = 0u; n < 3u; ++n) p.h[n].v[g] = h[n];
+}

@@ -65,4 +65,20 @@ std::unique_ptr<EngineBackend> makeCPUEngineBackend(const CopperYeeGrid& grid,
                                                       const CopperCPML& cpml,
                                                       const CopperDomainMask& domainMask);
 
+#if defined(COPPER_VULKAN)
+/// Defined in CopperVulkanEngine.cpp -- the GPU engine off macOS: CopperFDTD.metal's plain float
+/// kernels as Vulkan compute shaders, same field layout. Throws std::runtime_error when there is no
+/// usable Vulkan 1.2 device or not enough GPU memory for the grid.
+std::unique_ptr<EngineBackend> makeVulkanEngineBackend(const CopperYeeGrid& grid,
+                                                         const CopperExcitation& excitation,
+                                                         const CopperCPML& cpml,
+                                                         const CopperDomainMask& domainMask);
+
+struct CopperGPUDevice; // CopperFDTDRunner.h
+
+/// Defined in CopperVulkanEngine.cpp -- listGPUDevices() (CopperFDTDRunner.h) for this engine.
+/// Throws std::runtime_error when there is no usable Vulkan loader or instance.
+std::vector<CopperGPUDevice> listVulkanDevices();
+#endif
+
 } // namespace copper

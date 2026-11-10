@@ -592,7 +592,7 @@ CopperFDTDRunResult runFDTDPortImpl(ContinuousStructure& csx, const CopperFDTDPo
                     const double processFootprintGB =
                         static_cast<double>(currentPhysFootprintBytes()) / (1024.0 * 1024.0 * 1024.0);
                     std::fprintf(stderr,
-                                 "Copper: [@ %7.1fs] timestep %u/%u -- Metal allocated: %.3f GB, process "
+                                 "Copper: [@ %7.1fs] timestep %u/%u -- GPU allocated: %.3f GB, process "
                                  "footprint: %.3f GB\n",
                                  elapsed, globalTimestep, steps, metalAllocatedGB, processFootprintGB);
 

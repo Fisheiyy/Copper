@@ -1,0 +1,33 @@
+// SERIES lumped RLC: one element's ADE update between the E and H half-steps (CopperFDTD.metal's
+// lumpedRLCStep, in float like the Metal engine). One thread per element; each element's state is
+// its last three vdn then its last three jn.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x = 64) in;
+layout(push_constant) uniform Push { Params p; } pc;
+
+void main() {
+    Params p = pc.p;
+    const uint tid = gl_GlobalInvocationID.x;
+    if (tid >= p.lumpedCount) return;
+    const LumpedCell element = p.lumpedCells.v[tid];
+    const uint s = 6u * tid;
+    const float vdn0Old = p.lumpedState.v[s], vdn1Old = p.lumpedState.v[s + 1u];
+    const float jn0Old = p.lumpedState.v[s + 3u], jn1Old = p.lumpedState.v[s + 4u];
+    const float vdn2 = vdn1Old, jn1 = jn0Old, jn2 = jn1Old; // after the history shift
+
+    const uint g = gridIndex(p, element.x, element.y, element.z);
+    const float voltage = p.e[element.axis].v[g];
+    const float vdn0 = element.vvd * (voltage + element.vv2 * vdn2 + element.vj1 * jn1 + element.vj2 * jn2);
+    const float jn0 = element.ib0 * (vdn0 - vdn2) - element.b1 * element.ib0 * jn1 - element.b2 * element.ib0 * jn2;
+
+    p.lumpedState.v[s] = vdn0;
+    p.lumpedState.v[s + 1u] = vdn0Old;
+    p.lumpedState.v[s + 2u] = vdn1Old;
+    p.lumpedState.v[s + 3u] = jn0;
+    p.lumpedState.v[s + 4u] = jn0Old;
+    p.lumpedState.v[s + 5u] = jn1Old;
+    p.e[element.axis].v[g] = vdn0;
+}

@@ -1,0 +1,12 @@
+// Ends a timestep: advances the GPU-resident timestep counter the excitation kernel reads, so one
+// recorded command buffer can be submitted for any step. A single invocation.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x = 1) in;
+layout(push_constant) uniform Push { Params p; } pc;
+
+void main() {
+    pc.p.state.v[0] += 1u;
+}

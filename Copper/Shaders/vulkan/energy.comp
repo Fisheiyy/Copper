@@ -1,0 +1,42 @@
+// estimateEnergy()'s sums of squares, reduced per workgroup: each workgroup writes its partial sum
+// of E^2 and of H^2, and the host adds the partials in double. A float partial over one
+// workgroup's cells only overflows if the fields themselves are already far beyond physical.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x = 256) in;
+layout(push_constant) uniform Push { Params p; uint cellsPerGroup; } pc;
+
+shared float eSum[256];
+shared float hSum[256];
+
+void main() {
+    Params p = pc.p;
+    const uint local = gl_LocalInvocationID.x;
+    const uint begin = gl_WorkGroupID.x * pc.cellsPerGroup;
+    const uint end = min(begin + pc.cellsPerGroup, p.energyCellCount);
+    float e2 = 0.0, h2 = 0.0;
+    for (uint g = begin + local; g < end; g += 256u) {
+        for (uint n = 0u; n < 3u; ++n) {
+            const float e = p.e[n].v[g];
+            const float h = p.h[n].v[g];
+            e2 += e * e;
+            h2 += h * h;
+        }
+    }
+    eSum[local] = e2;
+    hSum[local] = h2;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (local < stride) {
+            eSum[local] += eSum[local + stride];
+            hSum[local] += hSum[local + stride];
+        }
+        barrier();
+    }
+    if (local == 0u) {
+        p.energyPartials.v[2u * gl_WorkGroupID.x] = eSum[0];
+        p.energyPartials.v[2u * gl_WorkGroupID.x + 1u] = hSum[0];
+    }
+}
