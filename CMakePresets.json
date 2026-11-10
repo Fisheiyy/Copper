@@ -5,12 +5,17 @@
     { "name": "macos-debug", "inherits": "base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CMAKE_OSX_ARCHITECTURES": "arm64" } },
     { "name": "macos-release", "inherits": "base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_OSX_ARCHITECTURES": "arm64" } },
     { "name": "linux-debug", "inherits": "base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "COPPER_ENABLE_METAL": "OFF" } },
-    { "name": "linux-release", "inherits": "base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "COPPER_ENABLE_METAL": "OFF" } }
+    { "name": "linux-release", "inherits": "base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "COPPER_ENABLE_METAL": "OFF" } },
+    { "name": "windows-base", "hidden": true, "inherits": "base", "description": "MSVC + vcpkg; run from a Visual Studio x64 Developer prompt with VCPKG_ROOT set. Inside KiEMS, use KiEMS's own presets instead.", "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }, "binaryDir": "${sourceDir}/out/${presetName}", "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake", "architecture": { "value": "x64", "strategy": "external" }, "toolset": { "value": "host=x64", "strategy": "external" }, "cacheVariables": { "CMAKE_C_COMPILER": "cl", "CMAKE_CXX_COMPILER": "cl", "VCPKG_TARGET_TRIPLET": "x64-windows", "COPPER_ENABLE_METAL": "OFF" } },
+    { "name": "windows-msvc-relwithdebinfo", "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" } },
+    { "name": "windows-msvc-release", "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } }
   ],
   "buildPresets": [
     { "name": "macos-debug", "configurePreset": "macos-debug" },
     { "name": "macos-release", "configurePreset": "macos-release" },
     { "name": "linux-debug", "configurePreset": "linux-debug" },
-    { "name": "linux-release", "configurePreset": "linux-release" }
+    { "name": "linux-release", "configurePreset": "linux-release" },
+    { "name": "windows-msvc-relwithdebinfo", "configurePreset": "windows-msvc-relwithdebinfo" },
+    { "name": "windows-msvc-release", "configurePreset": "windows-msvc-release" }
   ]
 }

@@ -10,6 +10,10 @@
 #include <thread>
 
 #include <blosc2.h>
+// Filter buffers belong to HDF5: they must come from, and go back to, HDF5's own allocator. With a
+// shared HDF5 on Windows the library and this code can have different C runtime heaps, so plain
+// malloc/free here would corrupt one of them.
+#include <hdf5.h>
 
 namespace copper {
 
@@ -136,9 +140,9 @@ size_t filterBlosc2Body(unsigned int flags, size_t inputBytes, size_t* bufferByt
                          outputBytes, encodedBytes, inputBytes);
             return 0;
         }
-        void* output = std::malloc(static_cast<size_t>(outputBytes));
+        void* output = H5allocate_memory(static_cast<size_t>(outputBytes), false);
         if (output == nullptr) {
-            std::fprintf(stderr, "Copper: Blosc2 filter (decompress): malloc(%d) failed\n", outputBytes);
+            std::fprintf(stderr, "Copper: Blosc2 filter (decompress): H5allocate_memory(%d) failed\n", outputBytes);
             return 0;
         }
 
@@ -150,7 +154,7 @@ size_t filterBlosc2Body(unsigned int flags, size_t inputBytes, size_t* bufferByt
         blosc2_context* decompressContext = threadLocalDecompressContext();
         if (decompressContext == nullptr) {
             std::fprintf(stderr, "Copper: Blosc2 filter (decompress): blosc2_create_dctx returned null\n");
-            std::free(output);
+            H5free_memory(output);
             return 0;
         }
         const int decoded = blosc2_decompress_ctx(decompressContext, *buffer, encodedBytes, output, outputBytes);
@@ -159,10 +163,10 @@ size_t filterBlosc2Body(unsigned int flags, size_t inputBytes, size_t* bufferByt
                          "Copper: Blosc2 filter (decompress): blosc2_decompress_ctx returned %d, expected "
                          "%d (encodedBytes=%d, error=%s)\n",
                          decoded, outputBytes, encodedBytes, decoded < 0 ? print_error(decoded) : "n/a");
-            std::free(output);
+            H5free_memory(output);
             return 0;
         }
-        std::free(*buffer);
+        H5free_memory(*buffer);
         *buffer = output;
         *bufferBytes = static_cast<size_t>(outputBytes);
         return static_cast<size_t>(outputBytes);
@@ -176,16 +180,16 @@ size_t filterBlosc2Body(unsigned int flags, size_t inputBytes, size_t* bufferByt
                      inputBytes);
         return 0;
     }
-    void* output = std::malloc(maximumOutput);
+    void* output = H5allocate_memory(maximumOutput, false);
     if (output == nullptr) {
-        std::fprintf(stderr, "Copper: Blosc2 filter (compress): malloc(%zu) failed\n", maximumOutput);
+        std::fprintf(stderr, "Copper: Blosc2 filter (compress): H5allocate_memory(%zu) failed\n", maximumOutput);
         return 0;
     }
 
     blosc2_context* context = threadLocalCompressContext();
     if (context == nullptr) {
         std::fprintf(stderr, "Copper: Blosc2 filter (compress): blosc2_create_cctx returned null\n");
-        std::free(output);
+        H5free_memory(output);
         return 0;
     }
     const int encoded = blosc2_compress_ctx(context, *buffer, static_cast<std::int32_t>(inputBytes), output,
@@ -195,11 +199,11 @@ size_t filterBlosc2Body(unsigned int flags, size_t inputBytes, size_t* bufferByt
                      "Copper: Blosc2 filter (compress): blosc2_compress_ctx returned %d (inputBytes=%zu, "
                      "maximumOutput=%zu, error=%s)\n",
                      encoded, inputBytes, maximumOutput, encoded < 0 ? print_error(encoded) : "n/a");
-        std::free(output);
+        H5free_memory(output);
         return 0;
     }
 
-    std::free(*buffer);
+    H5free_memory(*buffer);
     *buffer = output;
     *bufferBytes = maximumOutput;
     return static_cast<size_t>(encoded);

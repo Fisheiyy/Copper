@@ -7,7 +7,19 @@
 #include <iostream>
 #include <mutex>
 #include <string_view>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <io.h>
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 
 extern "C" void CuSwiftSetLogLevel(int level);
 extern "C" void CuSwiftLog(int level, const char* message, const char* file, std::uint_least32_t line,
@@ -20,8 +32,27 @@ namespace {
 LogLevel _globalLevel = LogLevel::Info;
 std::mutex _logMutex;
 
+bool _streamIsTerminal(FILE* stream) {
+#if defined(_WIN32)
+    if (::_isatty(::_fileno(stream)) == 0) {
+        return false;
+    }
+    // The Windows console only interprets ANSI escape sequences once virtual terminal processing
+    // is enabled for the handle; without it the codes would be printed literally.
+    const HANDLE handle = reinterpret_cast<HANDLE>(::_get_osfhandle(::_fileno(stream)));
+    DWORD mode = 0;
+    if (handle == INVALID_HANDLE_VALUE || ::GetConsoleMode(handle, &mode) == 0) {
+        return false;
+    }
+    return (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0 ||
+           ::SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0;
+#else
+    return ::isatty(::fileno(stream)) != 0;
+#endif
+}
+
 bool _streamSupportsColor(FILE* stream) {
-    if (::isatty(::fileno(stream)) == 0) {
+    if (!_streamIsTerminal(stream)) {
         return false;
     }
     if (const char* noColor = std::getenv("NO_COLOR"); noColor != nullptr && noColor[0] != '\0') {
@@ -70,7 +101,11 @@ std::string_view _levelColorCode(LogLevel level) {
 std::string _currentTimestamp() {
     const std::time_t now = std::time(nullptr);
     std::tm local{};
+#if defined(_WIN32)
+    ::localtime_s(&local, &now);
+#else
     ::localtime_r(&now, &local);
+#endif
     char buffer[16];
     const std::size_t written = std::strftime(buffer, sizeof(buffer), "%H:%M:%S", &local);
     return std::string(buffer, written);
@@ -104,8 +139,42 @@ void _logAt(LogLevel level, std::string_view message, std::string_view file, std
     stream.flush();
 }
 
+#if defined(_MSC_VER) && !defined(__clang__)
+// MSVC's source_location::function_name() is the whole signature -- return type, calling
+// convention and parameter types, e.g. "class std::expected<...> __cdecl ns::f(const T &)" -- where
+// Clang's is just the function's name. Keep only the qualified name, as macOS logs show it.
+std::string_view _functionName(std::string_view signature) {
+    // The parameter list opens at the first '(' outside template arguments, past any "operator ()".
+    int depth = 0;
+    std::size_t open = std::string_view::npos;
+    for (std::size_t i = 0; i < signature.size() && open == std::string_view::npos; ++i) {
+        const char c = signature[i];
+        if (c == '<') ++depth;
+        else if (c == '>') --depth;
+        else if (c == '(' && depth == 0 && !signature.substr(0, i).ends_with("operator ")) open = i;
+    }
+    if (open == std::string_view::npos) return signature;
+    // The name begins after the last space outside template arguments ("... __cdecl ns::f").
+    const std::string_view head = signature.substr(0, open);
+    std::size_t start = 0;
+    depth = 0;
+    for (std::size_t i = 0; i < head.size(); ++i) {
+        const char c = head[i];
+        if (c == '<') ++depth;
+        else if (c == '>') --depth;
+        else if (c == ' ' && depth == 0 && !head.substr(i + 1).starts_with("()")) start = i + 1;
+    }
+    const std::string_view name = head.substr(start);
+    return name.empty() ? signature : name;
+}
+#else
+std::string_view _functionName(std::string_view signature) {
+    return signature;
+}
+#endif
+
 void _log(LogLevel level, std::string_view message, const std::source_location& loc) {
-    _logAt(level, message, loc.file_name(), loc.line(), loc.function_name());
+    _logAt(level, message, loc.file_name(), loc.line(), _functionName(loc.function_name()));
 }
 
 } // namespace

@@ -13,6 +13,7 @@
 
 #include "Internal/CopperFieldFrameSignposts.hpp"
 #include "Internal/CopperHDF5Blosc2.hpp"
+#include "Internal/CopperPathUtf8.hpp"
 #include "Internal/FieldFrameSampleCodec.hpp"
 
 namespace copper {
@@ -465,10 +466,10 @@ std::expected<FieldFrameSeriesReader, std::string> FieldFrameSeriesReader::open(
         H5Pset_libver_bounds(fileAccess.get(), H5F_LIBVER_LATEST, H5F_LIBVER_LATEST) < 0) {
         return std::unexpected("Could not configure the HDF5 SWMR reader");
     }
-    impl->file = HId(H5Fopen(path.string().c_str(), H5F_ACC_RDONLY | H5F_ACC_SWMR_READ,
+    impl->file = HId(H5Fopen(pathToUtf8(path).c_str(), H5F_ACC_RDONLY | H5F_ACC_SWMR_READ,
                              fileAccess.get()), H5Fclose);
     if (!impl->file.valid()) {
-        return std::unexpected("Could not open " + path.string());
+        return std::unexpected("Could not open " + pathToUtf8(path));
     }
     const hid_t file = impl->file.get();
 

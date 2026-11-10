@@ -5,6 +5,8 @@
 #include "CSPrimBox.h"
 #include "CSPropProbeBox.h"
 
+#include "CopperPathUtf8.hpp"
+
 namespace copper {
 
 namespace {
@@ -108,7 +110,7 @@ CopperProbeWriter::CopperProbeWriter(const std::filesystem::path& directory, con
     : _weight(probe.weight) {
     _file.open(directory / probe.name);
     if (!_file.is_open()) {
-        throw std::runtime_error("CopperProbeWriter: failed to open " + (directory / probe.name).string());
+        throw std::runtime_error("CopperProbeWriter: failed to open " + pathToUtf8(directory / probe.name));
     }
     _file << "% time-domain " << (probe.type == CopperProbeType::Voltage ? "voltage" : "current")
           << " probe, written by Copper\n";

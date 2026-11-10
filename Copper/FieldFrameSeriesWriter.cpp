@@ -12,6 +12,7 @@
 
 #include "Internal/CopperFieldFrameSignposts.hpp"
 #include "Internal/CopperHDF5Blosc2.hpp"
+#include "Internal/CopperPathUtf8.hpp"
 #include "Internal/FieldFrameSampleCodec.hpp"
 
 namespace copper {
@@ -249,7 +250,7 @@ std::expected<FieldFrameSeriesWriter, std::string> FieldFrameSeriesWriter::creat
     std::fprintf(stdout,
                  "Copper: field frame-series %s: grid=%ux%ux%u, frame=%llu bytes/component, "
                  "publishFrames=%u, detailTile=16x16x2, storage=%s %s\n",
-                 path.string().c_str(), header.nx, header.ny, header.nz,
+                 pathToUtf8(path).c_str(), header.nx, header.ny, header.nz,
                  static_cast<unsigned long long>(frameBytes), chunkFrames,
                  field_codec::precisionName(header.storage.precision),
                  field_codec::channelsName(header.storage.channels));
@@ -278,9 +279,9 @@ std::expected<FieldFrameSeriesWriter, std::string> FieldFrameSeriesWriter::creat
         H5Pset_libver_bounds(fileAccess.get(), H5F_LIBVER_LATEST, H5F_LIBVER_LATEST) < 0) {
         return std::unexpected("Could not configure the HDF5 file for SWMR");
     }
-    impl->file = HId(H5Fcreate(path.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, fileAccess.get()), H5Fclose);
+    impl->file = HId(H5Fcreate(pathToUtf8(path).c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, fileAccess.get()), H5Fclose);
     if (!impl->file.valid()) {
-        return std::unexpected("Could not create " + path.string());
+        return std::unexpected("Could not create " + pathToUtf8(path));
     }
     const hid_t file = impl->file.get();
 

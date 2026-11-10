@@ -34,6 +34,7 @@
 #include "Internal/CopperFieldFrameSignposts.hpp"
 #include "Internal/CopperLumpedRLC.hpp"
 #include "Internal/CopperOperator.hpp"
+#include "Internal/CopperPathUtf8.hpp"
 #include "Internal/CopperPhysicalConstants.hpp"
 #include "Internal/CopperProbes.hpp"
 #include "Internal/CopperYeeGrid.hpp"
@@ -378,7 +379,7 @@ CopperFDTDRunResult runFDTDPortImpl(ContinuousStructure& csx, const CopperFDTDPo
                     std::move(*writer), static_cast<std::size_t>(grid.dims.cellCount()));
             } else {
                 result.errorMessage = "Could not create field frame-series file " +
-                                      fieldFrameSeries->path.string() + ": " + writer.error();
+                                      pathToUtf8(fieldFrameSeries->path) + ": " + writer.error();
                 if (writerCreationErrno == ENOSPC) {
                     result.errorMessage += ": disk is full (no space left on device)";
                 } else if (writerCreationErrno != 0) {
@@ -409,7 +410,7 @@ CopperFDTDRunResult runFDTDPortImpl(ContinuousStructure& csx, const CopperFDTDPo
                     std::fprintf(stderr, "Copper: field frame-series write failed, disabling further writes: %s\n",
                                  written.error().c_str());
                     fieldFrameSeriesFailure = "Could not write field-frame data to " +
-                                              fieldFrameSeries->path.string() + ": " + written.error();
+                                              pathToUtf8(fieldFrameSeries->path) + ": " + written.error();
                     fieldFrameSeriesWriter.reset();
                 }
             } else if (!fieldFrameSeries) {
@@ -670,7 +671,7 @@ CopperFDTDRunResult runFDTDPortImpl(ContinuousStructure& csx, const CopperFDTDPo
             if (auto closed = fieldFrameSeriesWriter->close(); !closed) {
                 std::fprintf(stderr, "Copper: field frame-series close() failed: %s\n", closed.error().c_str());
                 fieldFrameSeriesFailure = "Could not finish field-frame data in " +
-                                          fieldFrameSeries->path.string() + ": " + closed.error();
+                                          pathToUtf8(fieldFrameSeries->path) + ": " + closed.error();
                 if (errno == ENOSPC) {
                     *fieldFrameSeriesFailure += ": disk is full (no space left on device)";
                 } else if (errno != 0) {
@@ -902,7 +903,7 @@ std::string dumpEarlyFrames(ContinuousStructure& csx, const CopperFDTDPortConfig
         }
 
         std::fprintf(stdout, "Copper dumpEarlyFrames: wrote %u frame(s) to %s\n", frameCount,
-                     outputDir.string().c_str());
+                     pathToUtf8(outputDir).c_str());
         return {};
     } catch (const std::exception& error) {
         return std::string("Copper dumpEarlyFrames failed: ") + error.what();

@@ -1,0 +1,15 @@
+# Text files are stored with LF line endings and checked out in the platform's native style...
+* text=auto
+
+# ...except scripts, which their interpreters read as-is: a Windows checkout with CRLF endings would
+# break them under bash (and when the working tree is shared with macOS, Linux or WSL).
+*.sh text eol=lf
+*.py text eol=lf
+*.nix text eol=lf
+
+# Windows-only scripts keep Windows endings everywhere.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+*.png binary

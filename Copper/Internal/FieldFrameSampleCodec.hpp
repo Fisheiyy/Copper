@@ -78,6 +78,59 @@ inline float integerFullScale(FieldSamplePrecision precision, bool isSigned) {
     return isSigned ? 2047.0F : 4095.0F;
 }
 
+/// IEEE 754 binary16 conversions. GCC and Clang provide `_Float16` (and define
+/// __FLT16_MANT_DIG__ when they do), so those builds keep using the compiler's conversion. MSVC has
+/// no half-precision type; it uses an equivalent software conversion: round-to-nearest-even,
+/// gradual underflow to subnormals, overflow to infinity, and NaNs kept quiet with their payload.
+#if defined(__FLT16_MANT_DIG__)
+inline std::uint16_t floatToHalfBits(float value) {
+    return std::bit_cast<std::uint16_t>(static_cast<_Float16>(value));
+}
+
+inline float halfBitsToFloat(std::uint16_t bits) {
+    return static_cast<float>(std::bit_cast<_Float16>(bits));
+}
+#else
+inline std::uint16_t floatToHalfBits(float value) {
+    const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
+    const auto sign = static_cast<std::uint16_t>((bits >> 16) & 0x8000U);
+    const std::uint32_t magnitude = bits & 0x7FFFFFFFU;
+    if (magnitude > 0x7F800000U) { // NaN: keep it quiet and keep the top payload bits.
+        return static_cast<std::uint16_t>(sign | 0x7E00U | ((magnitude >> 13) & 0x03FFU));
+    }
+    if (magnitude >= 0x477FF000U) { // At or above 65520 (and infinity) rounds to infinity.
+        return static_cast<std::uint16_t>(sign | 0x7C00U);
+    }
+    if (magnitude < 0x38800000U) { // Below 2^-14: a half subnormal (or zero), in units of 2^-24.
+        // Scaling by 2^24 is exact, and nearbyint rounds to nearest-even in the default FP mode.
+        const float units = std::nearbyint(std::bit_cast<float>(magnitude) * 16777216.0F);
+        return static_cast<std::uint16_t>(sign | static_cast<std::uint16_t>(units));
+    }
+    // Normal: rebias the exponent (127 -> 15) and round the 13 dropped mantissa bits to
+    // nearest-even. A mantissa carry correctly increments the exponent.
+    std::uint32_t half = (magnitude - 0x38000000U) >> 13;
+    const std::uint32_t dropped = magnitude & 0x1FFFU;
+    if (dropped > 0x1000U || (dropped == 0x1000U && (half & 1U) != 0)) {
+        ++half;
+    }
+    return static_cast<std::uint16_t>(sign | half);
+}
+
+inline float halfBitsToFloat(std::uint16_t bits) {
+    const std::uint32_t sign = (static_cast<std::uint32_t>(bits) & 0x8000U) << 16;
+    const std::uint32_t exponent = (bits >> 10) & 0x1FU;
+    const std::uint32_t mantissa = bits & 0x03FFU;
+    if (exponent == 0) { // Zero or subnormal: mantissa * 2^-24, exact in float.
+        const float magnitude = static_cast<float>(mantissa) * 5.9604644775390625e-8F;
+        return sign != 0 ? -magnitude : magnitude;
+    }
+    if (exponent == 0x1F) { // Infinity, or NaN made quiet.
+        return std::bit_cast<float>(sign | 0x7F800000U | (mantissa << 13) | (mantissa != 0 ? 0x00400000U : 0U));
+    }
+    return std::bit_cast<float>(sign | ((exponent + 112U) << 23) | (mantissa << 13));
+}
+#endif
+
 /// Stores `value` at `destination`. Float32 keeps the exact bit pattern XORed with `baseline` (the
 /// sample's preview value), so decoding is bit exact. Every other precision stores `value / scale`
 /// -- `scale` being the channel's peak magnitude in this frame -- clamped to [-1, 1] (or [0, 1] for
@@ -92,7 +145,7 @@ inline void encode(FieldSamplePrecision precision, bool isSigned, float value, f
     float normalized = scale > 0.0F && std::isfinite(value) ? value / scale : 0.0F;
     normalized = std::clamp(normalized, isSigned ? -1.0F : 0.0F, 1.0F);
     if (precision == FieldSamplePrecision::Float16) {
-        const std::uint16_t bits = std::bit_cast<std::uint16_t>(static_cast<_Float16>(normalized));
+        const std::uint16_t bits = floatToHalfBits(normalized);
         std::memcpy(destination, &bits, sizeof bits);
         return;
     }
@@ -126,7 +179,7 @@ inline float decode(FieldSamplePrecision precision, bool isSigned, const std::ui
         case FieldSamplePrecision::Float16: {
             std::uint16_t bits = 0;
             std::memcpy(&bits, source, sizeof bits);
-            return static_cast<float>(std::bit_cast<_Float16>(bits)) * scale;
+            return halfBitsToFloat(bits) * scale;
         }
         case FieldSamplePrecision::Int8: {
             float stored = 0.0F;
