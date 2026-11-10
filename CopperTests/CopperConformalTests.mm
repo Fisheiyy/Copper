@@ -5,7 +5,9 @@
 // doesn't.
 #import <XCTest/XCTest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <numbers>
 #include <tuple>
@@ -217,8 +219,61 @@ double measuredCoaxImpedance(double dx, double dy, bool conformal, double radius
     // An edge clear of the cylinder is untouched.
     XCTAssertEqualWithAccuracy(b.vi[0][at(1, 1, 1)] / b.timestepSeconds, a.vi[0][at(1, 1, 1)] / a.timestepSeconds,
                                1e-6 * a.vi[0][at(1, 1, 1)] / a.timestepSeconds);
-    // The cut faces never cost more timestep than the stability bound allows.
-    XCTAssertGreaterThanOrEqual(b.timestepSeconds, copper::CopperOperator::kConformalStability * a.timestepSeconds);
+    // The cut faces cost no more timestep than the stability bound allows: with no conformal mode
+    // near the limit, only the eigenvalue limit's safety margin.
+    XCTAssertGreaterThanOrEqual(b.timestepSeconds, copper::CopperOperator::kConformalTimestepSafety *
+                                                       copper::CopperOperator::kConformalStability * a.timestepSeconds);
+}
+
+- (void)testBoardViaStaysStableWhereVar3OvershootsItsLimit {
+    // A board via (0.3 mm barrel through a 1.51 mm core) on the anisotropic cells a board mesh gives
+    // it -- 0.23 mm across, 0.05 mm along, 0.38 mm through. Var3's local estimate allowed ~5% more
+    // timestep than the cut faces around this barrel tolerate, and the run diverged within 250
+    // steps; CopperOperator now holds the timestep under the leapfrog's eigenvalue limit.
+    auto csx = std::make_unique<ContinuousStructure>();
+    CSRectGrid* grid = csx->GetGrid();
+    grid->SetDeltaUnit(1e-7); // libkiems' simulation unit, 0.1 um
+    for (int i = 0; i < 11; ++i) grid->AddDiscLine(0, 94353 + i * 2318.6);
+    for (int i = 0; i < 52; ++i) grid->AddDiscLine(1, 83567 + i * 501.84);
+    for (int i = 0; i < 5; ++i) grid->AddDiscLine(2, -15100 + i * 3775.0);
+    addCylinder(*csx, circle(105146.4, 96500, 3000), -15100, 0, true);
+
+    auto* exc = new CSPropExcitation(csx->GetParameterSet());
+    exc->SetName("source");
+    exc->SetExcitType(0);
+    exc->SetExcitation(1.0, 2);
+    csx->AddProperty(exc);
+    auto* source = new CSPrimBox(exc->GetParameterSet(), exc);
+    const double start[3] = {94353 + 2 * 2318.6, 83567 + 2 * 501.84, -15100};
+    const double stop[3] = {start[0], start[1], 0};
+    for (int axis = 0; axis < 3; ++axis) {
+        source->SetCoord(2 * axis, start[axis]);
+        source->SetCoord(2 * axis + 1, stop[axis]);
+    }
+
+    copper::CopperOperator::Config config = pulseConfig(10000);
+    config.f0 = 3e9;
+    config.fc = 3e9;
+    const copper::CopperOperator op(*csx, config);
+    copper::CopperEngine engine(op.grid(), op.excitation(), {}, copper::CopperEngine::Backend::CPU);
+    const auto largestE = [&] {
+        double largest = 0.0;
+        for (const auto field : {copper::CopperEngine::Field::Ex, copper::CopperEngine::Field::Ey,
+                                 copper::CopperEngine::Field::Ez}) {
+            for (const float value : engine.readField(field)) {
+                if (!std::isfinite(value)) return std::numeric_limits<double>::infinity();
+                largest = std::max(largest, static_cast<double>(std::fabs(value)));
+            }
+        }
+        return largest;
+    };
+    engine.run(7000); // the 3 GHz Gaussian is over by ~6200 steps
+    const double afterPulse = largestE();
+    XCTAssertTrue(std::isfinite(afterPulse));
+    XCTAssertGreaterThan(afterPulse, 0.0);
+    engine.run(3000);
+    // A lossless PEC cavity rings on; it must not grow.
+    XCTAssertLessThan(largestE(), 10 * afterPulse);
 }
 
 - (void)testSquareCoaxImpedanceDoesNotDependOnWhereTheConductorFallsBetweenLines {

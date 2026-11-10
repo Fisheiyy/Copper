@@ -1,9 +1,13 @@
 #include "CopperOperator.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstdint>
+#include <cstdio>
 #include <limits>
+#include <set>
 
 #include <CSPropExcitation.h>
 #include <CSPropLumpedElement.h>
@@ -1154,6 +1158,204 @@ double CopperOperator::calcTimestepVar3() const {
     return dT;
 }
 
+double CopperOperator::largestEigenvalueInBox(const std::array<unsigned int, 3>& lo,
+                                              const std::array<unsigned int, 3>& hi) const {
+    const std::array<unsigned int, 3> size = {hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1};
+    const std::size_t count = static_cast<std::size_t>(size[0]) * size[1] * size[2];
+    const auto local = [&](unsigned int x, unsigned int y, unsigned int z) {
+        return (static_cast<std::size_t>(z) * size[1] + y) * size[0] + x;
+    };
+    // An inert (metal) edge or face, or one with no coefficient at all, has no unknown: weight 0.
+    const auto inverse = [](double value) { return value > 0.0 && value < kInertCoefficient ? 1.0 / value : 0.0; };
+
+    // Edge n at node q exists when q + e_n is in the box; face m at node f when f + e_mP and
+    // f + e_mPP are. Everything else stays zero, so the box is a principal submatrix of the whole
+    // operator and its lambda_max a lower bound -- the margin makes it a close one.
+    std::array<std::vector<double>, 3> rootInvC, invL, x, y, faces;
+    for (int n = 0; n < 3; ++n) {
+        rootInvC[n].assign(count, 0.0);
+        invL[n].assign(count, 0.0);
+        x[n].assign(count, 0.0);
+        y[n].assign(count, 0.0);
+        faces[n].assign(count, 0.0);
+    }
+    for (unsigned int z = 0; z < size[2]; ++z) {
+        for (unsigned int yy = 0; yy < size[1]; ++yy) {
+            for (unsigned int xx = 0; xx < size[0]; ++xx) {
+                const unsigned int q[3] = {xx, yy, z};
+                const std::size_t l = local(xx, yy, z);
+                const std::size_t g = index(lo[0] + xx, lo[1] + yy, lo[2] + z);
+                for (int n = 0; n < 3; ++n) {
+                    const int nP = (n + 1) % 3, nPP = (n + 2) % 3;
+                    if (q[n] + 1 < size[n]) rootInvC[n][l] = std::sqrt(inverse(_ecC[n][g]));
+                    if (q[nP] + 1 < size[nP] && q[nPP] + 1 < size[nPP]) invL[n][l] = inverse(_ecL[n][g]);
+                    // A fixed pseudo-random start, so no mode is missed by symmetry.
+                    const std::uint64_t h = (static_cast<std::uint64_t>(l) * 3 + n + 1) * 0x9E3779B97F4A7C15ULL;
+                    x[n][l] = rootInvC[n][l] > 0.0 ? 0.5 + static_cast<double>(h >> 11) / 9007199254740992.0 : 0.0;
+                }
+            }
+        }
+    }
+
+    // A = S D^T L^-1 D S with S = C^-1/2 is symmetric, with the same eigenvalues as C^-1 D^T L^-1 D;
+    // its Rayleigh quotient rises to lambda_max under power iteration.
+    const auto step = [&](const std::array<std::vector<double>, 3>& in, std::array<std::vector<double>, 3>& out) {
+        for (int m = 0; m < 3; ++m) {
+            const int mP = (m + 1) % 3, mPP = (m + 2) % 3;
+            for (unsigned int z = 0; z < size[2]; ++z) {
+                for (unsigned int yy = 0; yy < size[1]; ++yy) {
+                    for (unsigned int xx = 0; xx < size[0]; ++xx) {
+                        const std::size_t f = local(xx, yy, z);
+                        if (invL[m][f] == 0.0) {
+                            faces[m][f] = 0.0;
+                            continue;
+                        }
+                        unsigned int p[3] = {xx, yy, z};
+                        ++p[mP];
+                        const std::size_t fP = local(p[0], p[1], p[2]);
+                        --p[mP];
+                        ++p[mPP];
+                        const std::size_t fPP = local(p[0], p[1], p[2]);
+                        const double curl = in[mPP][fP] * rootInvC[mPP][fP] - in[mPP][f] * rootInvC[mPP][f] -
+                                            in[mP][fPP] * rootInvC[mP][fPP] + in[mP][f] * rootInvC[mP][f];
+                        faces[m][f] = invL[m][f] * curl;
+                    }
+                }
+            }
+        }
+        for (int n = 0; n < 3; ++n) {
+            const int nP = (n + 1) % 3, nPP = (n + 2) % 3;
+            for (unsigned int z = 0; z < size[2]; ++z) {
+                for (unsigned int yy = 0; yy < size[1]; ++yy) {
+                    for (unsigned int xx = 0; xx < size[0]; ++xx) {
+                        const std::size_t e = local(xx, yy, z);
+                        if (rootInvC[n][e] == 0.0) {
+                            out[n][e] = 0.0;
+                            continue;
+                        }
+                        unsigned int p[3] = {xx, yy, z};
+                        double sum = faces[nPP][e] - faces[nP][e];
+                        if (p[nP] > 0) {
+                            --p[nP];
+                            sum -= faces[nPP][local(p[0], p[1], p[2])];
+                            ++p[nP];
+                        }
+                        if (p[nPP] > 0) {
+                            --p[nPP];
+                            sum += faces[nP][local(p[0], p[1], p[2])];
+                        }
+                        out[n][e] = rootInvC[n][e] * sum;
+                    }
+                }
+            }
+        }
+    };
+    const auto dot = [&](const std::array<std::vector<double>, 3>& a, const std::array<std::vector<double>, 3>& b) {
+        double sum = 0.0;
+        for (int n = 0; n < 3; ++n) {
+            for (std::size_t i = 0; i < count; ++i) sum += a[n][i] * b[n][i];
+        }
+        return sum;
+    };
+
+    // Lanczos: the largest Ritz value of the tridiagonal T it builds rises to lambda_max far faster
+    // than a power iteration's Rayleigh quotient -- which matters most exactly when a conformal mode
+    // only just clears the bulk spectrum. Ritz values never exceed lambda_max, and only the largest
+    // is wanted, so the lost orthogonality of plain Lanczos (duplicate Ritz values) does no harm.
+    const double initialNorm = std::sqrt(dot(x, x));
+    if (initialNorm == 0.0) return 0.0;
+    for (int n = 0; n < 3; ++n) {
+        for (double& v : x[n]) v /= initialNorm;
+    }
+    std::array<std::vector<double>, 3> previous;
+    for (int n = 0; n < 3; ++n) previous[n].assign(count, 0.0);
+    std::vector<double> alpha, beta; // T's diagonal, and its off-diagonal (beta[j] couples j, j + 1)
+    const auto largestRitzValue = [&]() {
+        // Bisection on the Sturm count: the number of T's eigenvalues below `at`.
+        const std::size_t k = alpha.size();
+        const auto below = [&](double at) {
+            std::size_t count = 0;
+            double d = 1.0;
+            for (std::size_t i = 0; i < k; ++i) {
+                const double b2 = i > 0 ? beta[i - 1] * beta[i - 1] : 0.0;
+                d = alpha[i] - at - (i > 0 ? b2 / d : 0.0);
+                if (d == 0.0) d = -1e-300;
+                if (d < 0.0) ++count;
+            }
+            return count;
+        };
+        double lo = std::numeric_limits<double>::infinity(), hi = -lo;
+        for (std::size_t i = 0; i < k; ++i) {
+            const double radius = (i > 0 ? std::fabs(beta[i - 1]) : 0.0) + (i + 1 < k ? std::fabs(beta[i]) : 0.0);
+            lo = std::min(lo, alpha[i] - radius);
+            hi = std::max(hi, alpha[i] + radius);
+        }
+        for (int step = 0; step < 200 && hi - lo > 1e-12 * std::fabs(hi); ++step) {
+            const double mid = (lo + hi) / 2;
+            (below(mid) < k ? lo : hi) = mid;
+        }
+        return hi;
+    };
+
+    constexpr int kMaxIterations = 400;
+    constexpr int kCheckEvery = 10;
+    double lambda = 0.0;
+    double lastChecked = 0.0;
+    for (int iteration = 1; iteration <= kMaxIterations; ++iteration) {
+        step(x, y);
+        const double a = dot(x, y);
+        const double b = beta.empty() ? 0.0 : beta.back();
+        for (int n = 0; n < 3; ++n) {
+            for (std::size_t i = 0; i < count; ++i) y[n][i] -= a * x[n][i] + b * previous[n][i];
+        }
+        alpha.push_back(a);
+        const double next = std::sqrt(dot(y, y));
+        const bool exhausted = next <= 1e-12 * std::fabs(a);
+        if (iteration % kCheckEvery == 0 || exhausted || iteration == kMaxIterations) {
+            lambda = largestRitzValue();
+            if (exhausted || lambda - lastChecked <= 1e-9 * lambda) break;
+            lastChecked = lambda;
+        }
+        beta.push_back(next);
+        std::swap(previous, x);
+        for (int n = 0; n < 3; ++n) {
+            for (std::size_t i = 0; i < count; ++i) x[n][i] = y[n][i] / next;
+        }
+    }
+    return lambda;
+}
+
+double CopperOperator::conformalStableTimestep() const {
+    const CSProperties::PropertyType pecType =
+        static_cast<CSProperties::PropertyType>(CSProperties::MATERIAL | CSProperties::METAL);
+    const PrimitiveTypeCache& cache = primitiveTypeCache(pecType);
+    std::set<std::array<unsigned int, 6>> boxes;
+    for (std::size_t p = 0; p < cache.prims.size(); ++p) {
+        const CSProperties* property = cache.prims[p]->GetProperty();
+        if (!property->ExistAttribute(kConformalAttribute) && !property->ExistAttribute(kThinWireRadiusAttribute)) continue;
+        if (!cache.boundBoxes[p].ok) continue;
+        const auto& bb = cache.boundBoxes[p].box;
+        std::array<unsigned int, 6> box{};
+        for (int axis = 0; axis < 3; ++axis) {
+            const std::vector<double>& lines = _rawLines[axis];
+            const auto lineCount = static_cast<unsigned int>(lines.size());
+            const double a = std::min(bb[2 * axis], bb[2 * axis + 1]), b = std::max(bb[2 * axis], bb[2 * axis + 1]);
+            auto first = static_cast<unsigned int>(std::lower_bound(lines.begin(), lines.end(), a) - lines.begin());
+            auto last = static_cast<unsigned int>(std::upper_bound(lines.begin(), lines.end(), b) - lines.begin());
+            first = first > kConformalStabilityMarginLines ? first - kConformalStabilityMarginLines : 0;
+            last = std::min(last + kConformalStabilityMarginLines, lineCount - 1);
+            box[2 * axis] = first;
+            box[2 * axis + 1] = std::max(first, last);
+        }
+        boxes.insert(box);
+    }
+    double lambda = 0.0;
+    for (const auto& box : boxes) {
+        lambda = std::max(lambda, largestEigenvalueInBox({box[0], box[2], box[4]}, {box[1], box[3], box[5]}));
+    }
+    return lambda > 0.0 ? 2.0 / std::sqrt(lambda) : std::numeric_limits<double>::infinity();
+}
+
 // ---- conformal metal and thin wires -- see CopperConformal.hpp and applyConformalPEC()'s own doc
 // comment ----
 
@@ -1692,7 +1894,17 @@ CopperOperator::CopperOperator(ContinuousStructure& csx, const Config& config) :
         applyConformalPEC(calcTimestepVar3());
     }
 
-    const double dT = calcTimestepVar3();
+    double dT = calcTimestepVar3();
+    if (hasConformalGeometry()) {
+        const auto started = std::chrono::steady_clock::now();
+        const double limit = conformalStableTimestep();
+        if (std::getenv("COPPER_TRACE_TIMESTEP")) {
+            const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+            std::fprintf(stderr, "Copper: Var3 timestep %.6g s, conformal stability limit %.6g s (%.4f of Var3), %.2f s\n",
+                         dT, limit, limit / dT, seconds);
+        }
+        dT = std::min(dT, kConformalTimestepSafety * limit);
+    }
     _grid.timestepSeconds = dT;
     restoreInertCoefficients();
 

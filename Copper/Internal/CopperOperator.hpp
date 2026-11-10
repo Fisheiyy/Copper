@@ -96,11 +96,20 @@ public:
     /// modified material parameters for a wire of that radius (see CopperConformal.hpp).
     static constexpr const char* kThinWireRadiusAttribute = "copper:thin_wire_radius";
     /// The fraction of `baseTimestep` a conformal face may pull its neighbourhood's stable timestep
-    /// down to before it gives up geometric precision instead -- see applyConformalPEC(). One: a
-    /// conformal face never costs timestep. Allowing 5-10% loss measurably helps only conductors
-    /// four or more cells across (coax tests in CopperConformalTests), not vias against a board's
-    /// mesh, so it isn't worth the extra steps.
+    /// down to, by Var3's local estimate, before it gives up geometric precision instead -- see
+    /// applyConformalPEC(). One: by that estimate a conformal face never costs timestep. Allowing
+    /// 5-10% loss measurably helps only conductors four or more cells across (coax tests in
+    /// CopperConformalTests), not vias against a board's mesh, so it isn't worth the extra steps.
+    /// The estimate isn't a bound, though; conformalStableTimestep() catches where it overshoots.
     static constexpr double kConformalStability = 1.0;
+    /// The fraction of conformalStableTimestep()'s stability limit the run may use. The limit comes
+    /// from eigenvalues that converge from below, over a box that can only lower them, so it keeps a
+    /// margin -- a small one: on a board, runs at 0.99 of the limit stay stable and runs at 1.03
+    /// diverge, and where only bulk modes are near the limit it sits 1-2% above Var3's timestep.
+    static constexpr double kConformalTimestepSafety = 0.98;
+    /// Mesh lines of free space conformalStableTimestep() keeps around each conformal primitive, for
+    /// its unstable modes to decay into.
+    static constexpr unsigned int kConformalStabilityMarginLines = 4;
     /// The value an edge's capacitance or a face's inductance is held at while the timestep is
     /// derived, marking it metal: no unknown, so absent from the estimate (see localTimestepVar3()).
     static constexpr double kInertCoefficient = 1e30;
@@ -299,6 +308,22 @@ private:
     /// Benkler, Chavannes and Kuster trade theirs ("A new 3-D conformal PEC FDTD scheme with
     /// user-defined geometric precision and derived stability criterion", IEEE TAP 54(6), 2006).
     void applyConformalPEC(double baseTimestep);
+    /// The largest timestep the leapfrog update is stable at around the conformal primitives, from
+    /// the coefficients applyConformalPEC() left (inert ones still held). Var3 is only a local
+    /// estimate, and next to a cut face with little open area it overshoots: StickHub's vias went
+    /// NaN after ~700 steps at Var3's timestep, and needed it cut by 10-20%. This is the bound
+    /// itself: leapfrog is stable while dt^2 * lambda_max(C^-1 D^T L^-1 D) < 4 (D the face-edge
+    /// incidence, C/L the edge capacitances and face inductances), so Lanczos finds lambda_max over
+    /// each conformal primitive's box plus kConformalStabilityMarginLines -- a conformal cell's
+    /// unstable mode is local, so the box holds it. Applied as min(Var3, kConformalTimestepSafety *
+    /// this): where no conformal mode is near the limit it costs nothing or under 1%; across the
+    /// thru board's 37 vias, each of the 20 that diverged at Var3 is stable under it.
+    /// Infinity when there is no conformal geometry. COPPER_TRACE_TIMESTEP
+    /// in the environment prints it against Var3's timestep, with the time it took.
+    double conformalStableTimestep() const;
+    /// lambda_max of C^-1 D^T L^-1 D over the edges and faces inside node box [lo, hi], with
+    /// everything outside the box held at zero.
+    double largestEigenvalueInBox(const std::array<unsigned int, 3>& lo, const std::array<unsigned int, 3>& hi) const;
     /// Restores the real coefficients applyConformalPEC() held inert, so vv/vi/ii/iv (and any lumped
     /// element painted over them later) see them.
     void restoreInertCoefficients();
