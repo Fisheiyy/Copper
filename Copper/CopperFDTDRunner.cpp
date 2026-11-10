@@ -652,8 +652,9 @@ CopperFDTDRunResult runFDTDPortImpl(ContinuousStructure& csx, const CopperFDTDPo
             } else {
                 std::fprintf(stdout,
                              "Copper: RunFDTD: Warning: Max. number of timesteps was reached before the "
-                             "end-criteria of -%.2fdB was reached...\n",
-                             std::fabs(10.0 * std::log10(endCriteria)));
+                             "end-criteria of -%.2fdB was reached (energy down %.2fdB)...\n",
+                             std::fabs(10.0 * std::log10(endCriteria)),
+                             energyChange > 0.0 ? std::fabs(10.0 * std::log10(energyChange)) : 0.0);
             }
         }
 
@@ -695,6 +696,8 @@ CopperFDTDRunResult runFDTDPortImpl(ContinuousStructure& csx, const CopperFDTDPo
         } else {
             result.success = true;
             result.timestepsRun = stepsActuallyRun;
+            result.endCriteriaReached = endCriteriaReached;
+            result.energyDecayDB = energyChange > 0.0 ? std::fabs(10.0 * std::log10(energyChange)) : 0.0;
         }
     } catch (const std::exception& error) {
         result.errorMessage = std::string("Copper FDTD run failed: ") + error.what();

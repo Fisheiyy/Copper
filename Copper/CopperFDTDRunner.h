@@ -183,6 +183,11 @@ struct CopperFDTDRunResult {
     bool cancelled = false;
     /// Timesteps actually run -- below `maxTimesteps` when the energy-decay end criteria stopped it.
     std::uint32_t timestepsRun = 0;
+    /// Whether the energy decayed to the end criteria. False when `maxTimesteps` ran out first: the
+    /// response is cut short, and spectra taken from it ripple -- badly, below ~30 dB of decay.
+    bool endCriteriaReached = false;
+    /// How far the field energy had decayed from its peak when the run stopped, in dB.
+    double energyDecayDB = 0.0;
     std::vector<CopperProbeResult> probes;
     /// Populated only when a requested FieldFrameSeriesRequest was written and closed successfully.
     /// In that case fieldSnapshot contains mesh metadata but no frames.
